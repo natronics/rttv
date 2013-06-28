@@ -191,12 +191,13 @@ $(function () {
           '<br>X ' + json.AccelerometerX.toFixed(2) +
           '<br>Y ' + json.AccelerometerY.toFixed(2) + 
           '<br>Z ' + json.AccelerometerZ.toFixed(2) + 
-          '<br>Magnitude: ' + json.AccelerometerMagn.toFixed(2);
+          '<br>Magnitude: ' + json.AccelerometerMagn.toFixed(4);
         acc.innerHTML = acceleration;
         
         //send data to graph every 100ms
         if ((newTime-oldTime) > 100){
-          rollGraph.put(Math.abs(json.GyroscopeX.toFixed(2)));
+          //rollGraph.put(json.AccelerometerX.toFixed(3));
+          rollGraph.put(json.GyroscopeX.toFixed(3));
           tick();
           oldTime = newTime;
         }

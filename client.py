@@ -13,8 +13,8 @@ import tornado.websocket
 IP_ADDRESS = ""        # dafault IP
 PORT = 35001           # port which socket listens for packets
 PACKET_SIZE = 4096     # maximum packet size to receive
-TIMEOUT = 5            # time in seconds to wait for a packet
-Count_mess = 1000      # the rate of transmitting message to the client's browser	
+TIMEOUT = 1           # time in seconds to wait for a packet
+Count_mess = 100      # the rate of transmitting message to the client's browser	
 
 DEBUG = (sys.argv[1:] == ['-d'])                # use '-d' option to display program output
 
@@ -25,9 +25,10 @@ messageType = {
         'GPS\x01':  struct.Struct("<BBH 3d 5f HH"), # GPS BIN1
         # more details about GPS format here:
         # http://www.hemispheregps.com/gpsreference/Bin1.htm
-        'ADIS':     struct.Struct(">12H"),          # ADIS16405 IMU
-        'MPU9':     struct.Struct(">7H"),           # MPU9150 IMU
-        'MPL3':     struct.Struct(">2L"),           # MPL3115A2 Pressure Sensor
+        'ADIS':     struct.Struct("<12h"),          # ADIS16405 IMU
+        'MPU9':     struct.Struct("<7H"),           # MPU9150 IMU
+        'MPL3':     struct.Struct("<2L"),           # MPL3115A2 Pressure Sensor
+        'ROLL':     struct.Struct("<HB"),           # MPL3115A2 Pressure Sensor
 }
 
 openWebSockets = []
@@ -130,64 +131,138 @@ def initData():
 		processData.ADISmess['Accelerometer'+i] = 0
 		processData.ADISmess['Magnetometer'+i] =0
 
+def twos_comp(val, bits):
+    """compute the 2's compliment of int value val"""
+    if( (val&(1<<(bits-1))) != 0 ):
+        val = val - (1<<bits)
+    return val
+
+
+def jsonADIS(fieldID, timestamp, parsedData):
+
+    #print parsedData[4], twos_comp(parsedData[4], 16)
+
+    obj = {
+        'fieldID': fieldID,
+        'timestamp': timestamp,
+        'PowerSupply': parsedData[0],
+        'GyroscopeX': -parsedData[1] *0.05,
+        'GyroscopeY': parsedData[2],
+        'GyroscopeZ': parsedData[3],
+        'GyroscopeMagn' : 0,
+        #'AccelerometerX': twos_comp(parsedData[4], 16),
+        #'AccelerometerY': twos_comp(parsedData[5], 16),
+        #'AccelerometerZ': twos_comp(parsedData[6], 16),
+        'AccelerometerX': -parsedData[4] / 333.0,
+        'AccelerometerY': parsedData[5] / 333.0,
+        'AccelerometerZ': parsedData[6] / 333.0,
+        'AccelerometerMagn': 0,
+        'MagnetometerX': parsedData[7],
+        'MagnetometerY': parsedData[8],
+        'MagnetometerZ': parsedData[9],
+        'MagnetometerMagn': 0,
+        'Temperature': parsedData[10],
+        'AuxiliaryADC': parsedData[11]
+    }
+    return obj
+
+
+
+temp = jsonADIS('ADIS', 0, (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0))
+packet_count = 0
 
 def processData(fieldID, timestamp, length, data):
+    #for GPS, MPL3, MPU9 message: skip only send every 1000th message to the client's browser
+    #for ADIS message: average 1000 message, then send to the client's browser
+    # handle error message
+    if fieldID == 'ERRO':
+        return jsonERRO(fieldID, timestamp, data)
 
-#for GPS, MPL3, MPU9 message: skip only send every 1000th message to the client's browser
-#for ADIS message: average 1000 message, then send to the client's browser
-        # handle error message
-        if fieldID == 'ERRO':
-                return jsonERRO(fieldID, timestamp, data)
-
-        # parse data
-        format = messageType.get(fieldID)
-        if format == None or len(data) <> format.size: # validate data format
-                if DEBUG:
-                        print "warning: unable to parse message of type", fieldID
-                return None # skip this message
-
-        parsedData = format.unpack(data) # tuple containing parsed data
+    # parse data
+    format = messageType.get(fieldID)
+    if format == None or len(data) <> format.size: # validate data format
         if DEBUG:
-                print repr(parsedData)
+            print "warning: unable to parse message of type", fieldID
+            return None # skip this message
 
-        if fieldID == 'SEQN':
-                return None # skip
-        elif fieldID == 'GPS\x01':
-		processData.GPS = processData.GPS + 1
-		temp = jsonGPSbin1(fieldID, timestamp, parsedData)
-		if ( processData.GPS == Count_mess):
-			processData.GPS = 0
-			return temp		
-#get parsedData, then sum up 1000 messages before averaging them		
-        elif fieldID == 'ADIS':
-		processData.ADIS = processData.ADIS + 1
-		temp = jsonADIS(fieldID, timestamp, parsedData)
-		if ( processData.ADIS == Count_mess):
-			for i in ['X', 'Y', 'Z', 'Magn']:
-				temp['Gyroscope'+i] = (temp['Gyroscope'+i] + processData.ADISmess['Gyroscope'+i] ) / Count_mess	
-				temp['Accelerometer'+i] = (temp['Accelerometer'+i] + processData.ADISmess['Accelerometer'+i] ) / Count_mess	
-				temp['Magnetometer'+i] = (temp['Magnetometer'+i] + processData.ADISmess['Magnetometer'+i] ) / Count_mess	
-			processData.ADIS = 0
-			processData.ADISmess['GyroscopeX'] = 0
-			processData.ADISmess['GyroscopeY'] = 0
-			processData.ADISmess['GyroscopeZ'] = 0
-			return json.dumps(temp);
-		else:
-			for i in ['X', 'Y', 'Z', 'Magn']:
-				processData.ADISmess['Gyroscope'+i] = (temp['Gyroscope'+i] + processData.ADISmess['Gyroscope'+i] ) 	
-				processData.ADISmess['Accelerometer'+i] = (temp['Accelerometer'+i] + processData.ADISmess['Accelerometer'+i] ) 	
-				processData.ADISmess['Magnetometer'+i] = (temp['Magnetometer'+i] + processData.ADISmess['Magnetometer'+i] ) 
-	elif fieldID == 'MPU9':
-		processData.MPU9 = processData.MPU9 + 1
-		if ( processData.MPU9 == Count_mess):
-			processData.MPU9 = 0;
-	                return jsonMPU9(fieldID, timestamp, parsedData)
-        elif fieldID == 'MPL3':
-		processData.MPL3 = processData.MPL3 + 1
-		if ( processData.MPL3 == Count_mess):
-			processData.MPL3 = 0
-	        	return jsonMPL3(fieldID, timestamp, parsedData)
-        return None
+    parsedData = format.unpack(data) # tuple containing parsed data
+    if DEBUG:
+        print repr(parsedData)
+
+
+    if fieldID == 'SEQN':
+        return None # skip
+
+    elif fieldID == 'GPS\x01':
+        processData.GPS = processData.GPS + 1
+        temp = jsonGPSbin1(fieldID, timestamp, parsedData)
+        if ( processData.GPS == Count_mess):
+            processData.GPS = 0
+        return temp		
+
+    elif fieldID == 'ADIS':
+        global packet_count
+        global temp
+        packet_count = packet_count + 1        
+        data = jsonADIS(fieldID, timestamp, parsedData)
+
+        #print  data['AccelerometerX'], temp['AccelerometerX'],  data['AccelerometerX'] +  temp['AccelerometerX']
+
+        if packet_count == Count_mess:
+            for i in ['X', 'Y', 'Z']:
+                temp['Gyroscope'+i] += data['Gyroscope'+i]
+                temp['Accelerometer'+i] += data['Accelerometer'+i]
+                temp['Accelerometer'+i]  = temp['Accelerometer'+i] / float(packet_count)
+
+            temp['AccelerometerMagn'] = magnitude(temp['AccelerometerX'], temp['AccelerometerY'], temp['AccelerometerZ'])
+
+            #print temp
+
+            t = temp
+            temp = jsonADIS('ADIS', 0, (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0))
+            packet_count = 0
+            return json.dumps(t)
+
+        temp['AccelerometerX'] = temp['AccelerometerX'] + data['AccelerometerX']
+        temp['AccelerometerY'] = temp['AccelerometerY'] + data['AccelerometerY']
+
+        """
+        processData.ADIS = processData.ADIS + 1
+        temp = jsonADIS(fieldID, timestamp, parsedData)
+
+        data = jsonADIS(fieldID, timestamp, parsedData)
+
+        print temp
+
+        if ( processData.ADIS == Count_mess):
+            for i in ['X', 'Y', 'Z', 'Magn']:
+                temp['Gyroscope'+i] = (temp['Gyroscope'+i] + processData.ADISmess['Gyroscope'+i] ) / Count_mess	
+                temp['Accelerometer'+i] = (temp['Accelerometer'+i] + processData.ADISmess['Accelerometer'+i] ) / Count_mess	
+                temp['Magnetometer'+i] = (temp['Magnetometer'+i] + processData.ADISmess['Magnetometer'+i] ) / Count_mess	
+            processData.ADIS = 0
+            processData.ADISmess['GyroscopeX'] = 0
+            processData.ADISmess['GyroscopeY'] = 0
+            processData.ADISmess['GyroscopeZ'] = 0
+            return json.dumps(temp);
+        else:
+            for i in ['X', 'Y', 'Z', 'Magn']:
+                processData.ADISmess['Gyroscope'+i] = (temp['Gyroscope'+i] + processData.ADISmess['Gyroscope'+i] ) 	
+                processData.ADISmess['Accelerometer'+i] = (temp['Accelerometer'+i] + processData.ADISmess['Accelerometer'+i] ) 	
+                processData.ADISmess['Magnetometer'+i] = (temp['Magnetometer'+i] + processData.ADISmess['Magnetometer'+i] ) 
+        """
+    elif fieldID == 'MPU9':
+        processData.MPU9 = processData.MPU9 + 1
+        if ( processData.MPU9 == Count_mess):
+            processData.MPU9 = 0;
+        return jsonMPU9(fieldID, timestamp, parsedData)
+
+    elif fieldID == 'MPL3':
+        processData.MPL3 = processData.MPL3 + 1
+        if ( processData.MPL3 == Count_mess):
+            processData.MPL3 = 0
+        return jsonMPL3(fieldID, timestamp, parsedData)
+
+    return None
 
 def jsonGPSbin1(fieldID, timestamp, parsedData):
         obj = json.dumps({
@@ -207,33 +282,6 @@ def jsonGPSbin1(fieldID, timestamp, parsedData):
                 'NavMode': parsedData[11],
                 'ExtendedAgeOfDiff': parsedData[12]
         })
-        return obj
-
-def jsonADIS(fieldID, timestamp, parsedData):
-        obj = {
-	     # json.dumps({
-			
-	        'fieldID': fieldID,
-                'timestamp': timestamp,
-                'PowerSupply': parsedData[0],
-                'GyroscopeX': parsedData[1],
-                'GyroscopeY': parsedData[2],
-                'GyroscopeZ': parsedData[3],
-           #     'GyroscopeMagn': magnitude(parsedData[1], parsedData[2], parsedData[3]),
-		'GyroscopeMagn' : 0,
-                'AccelerometerX': parsedData[4],
-                'AccelerometerY': parsedData[5],
-                'AccelerometerZ': parsedData[6],
-           #    'AccelerometerMagn': magnitude(parsedData[4], parsedData[5], parsedData[6]),
-		'AccelerometerMagn': 0,
-                'MagnetometerX': parsedData[7],
-                'MagnetometerY': parsedData[8],
-                'MagnetometerZ': parsedData[9],
-           #    'MagnetometerMagn': magnitude(parsedData[7], parsedData[8], parsedData[9]),
-		'MagnetometerMagn': 0,
-                'Temperature': parsedData[10],
-                'AuxiliaryADC': parsedData[11]
-        }
         return obj
 
 def jsonMPU9(fieldID, timestamp, parsedData):
